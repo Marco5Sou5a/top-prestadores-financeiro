@@ -34,7 +34,7 @@ def formatar_real(valor):
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # ======================================================
-# FUNÇÕES — TOP PRESTADORES (VIEW OFICIAL)
+# FUNÇÕES — TOP PRESTADORES
 # ======================================================
 def carregar_meses_top():
     query = """
@@ -46,9 +46,7 @@ def carregar_meses_top():
 
 def carregar_top_prestadores(mes, top_n):
     query = text("""
-        select
-            prestador,
-            total_pago
+        select prestador, total_pago
         from vw_top_prestadores
         where mes_referencia = :mes
         order by total_pago desc
@@ -74,7 +72,7 @@ def total_sem_agua_do_cernes(mes, top_n):
     return df.iloc[0]["total"] or 0
 
 # ======================================================
-# FUNÇÕES — COMPARATIVO MENSAL POR CATEGORIA
+# FUNÇÕES — COMPARATIVO MENSAL
 # ======================================================
 def carregar_comparativo_mensal_categoria():
     query = """
@@ -90,7 +88,7 @@ def carregar_comparativo_mensal_categoria():
     return pd.read_sql(query, engine)
 
 # ======================================================
-# FUNÇÕES — COMPARATIVO YoY (YEAR OVER YEAR)
+# FUNÇÕES — YoY
 # ======================================================
 def carregar_yoy_categoria():
     query = """
@@ -125,7 +123,7 @@ def carregar_yoy_categoria():
     return pd.read_sql(query, engine)
 
 # ======================================================
-# INTERFACE — ABAS
+# ABAS
 # ======================================================
 aba1, aba2, aba3 = st.tabs([
     "🏆 Top Prestadores",
@@ -139,28 +137,24 @@ aba1, aba2, aba3 = st.tabs([
 with aba1:
     df_meses = carregar_meses_top()
 
-    if df_meses.empty:
-        st.warning("Nenhum dado encontrado na VIEW de Top Prestadores.")
-        st.stop()
-
     mes_selecionado = st.selectbox(
-        "📅 Selecione o mês de referência",
-        df_meses["mes_referencia"].dt.strftime("%Y-%m").tolist()
+        "📅 Selecione o mês",
+        df_meses["mes_referencia"].dt.strftime("%Y-%m").tolist(),
+        key="mes_top"
     )
 
     top_n = st.selectbox(
         "🔢 Top N",
         [5, 10, 20, 50],
-        index=1
+        index=1,
+        key="top_n"
     )
 
     mes_data = pd.to_datetime(mes_selecionado + "-01")
 
-    if st.button("▶ Gerar Top Prestadores"):
+    if st.button("▶ Gerar Ranking", key="btn_top"):
         resultado = carregar_top_prestadores(mes_data, top_n)
         total_sem_agua = total_sem_agua_do_cernes(mes_data, top_n)
-
-        st.success("Ranking gerado com sucesso!")
 
         st.dataframe(
             resultado.reset_index(drop=True),
@@ -173,36 +167,28 @@ with aba1:
         )
 
 # ======================================================
-# ABA 2 — COMPARATIVO MENSAL POR CATEGORIA
+# ABA 2 — COMPARATIVO MENSAL
 # ======================================================
 with aba2:
     st.subheader("📈 Comparativo Mensal por Categoria")
 
     df_comp = carregar_comparativo_mensal_categoria()
 
-    if df_comp.empty:
-        st.warning("Nenhum dado encontrado.")
-        st.stop()
-
     categorias = st.multiselect(
         "Selecione as categorias",
-        sorted(df_comp["categoria"].dropna().unique())
+        sorted(df_comp["categoria"].dropna().unique()),
+        key="categorias_mensal"
     )
 
     if categorias:
         df_comp = df_comp[df_comp["categoria"].isin(categorias)]
 
-    df_pivot = (
-        df_comp
-        .pivot_table(
-            index="mes",
-            columns="categoria",
-            values="total_pago",
-            aggfunc="sum"
-        )
-        .fillna(0)
-        .sort_index()
-    )
+    df_pivot = df_comp.pivot_table(
+        index="mes",
+        columns="categoria",
+        values="total_pago",
+        aggfunc="sum"
+    ).fillna(0).sort_index()
 
     st.dataframe(
         df_pivot.applymap(formatar_real),
@@ -211,23 +197,18 @@ with aba2:
 
     st.line_chart(df_pivot)
 
-    st.caption("📌 Base: data_pagamento • Valores absolutos")
-
 # ======================================================
-# ABA 3 — COMPARATIVO YoY
+# ABA 3 — YoY
 # ======================================================
 with aba3:
-    st.subheader("📊 Comparativo Year over Year (YoY)")
+    st.subheader("📊 Comparativo YoY")
 
     df_yoy = carregar_yoy_categoria()
 
-    if df_yoy.empty:
-        st.warning("Nenhum dado encontrado para YoY.")
-        st.stop()
-
     categorias_yoy = st.multiselect(
         "Selecione as categorias",
-        sorted(df_yoy["categoria"].dropna().unique())
+        sorted(df_yoy["categoria"].dropna().unique()),
+        key="categorias_yoy"
     )
 
     if categorias_yoy:
@@ -239,18 +220,14 @@ with aba3:
     df_yoy["Variação (R$)"] = df_yoy["variacao_valor"].apply(formatar_real)
     df_yoy["Variação (%)"] = (df_yoy["variacao_percentual"] * 100).round(2)
 
-    tabela_yoy = df_yoy[[
-        "Mês",
-        "categoria",
-        "Total Atual",
-        "Total Ano Anterior",
-        "Variação (R$)",
-        "Variação (%)"
-    ]]
-
     st.dataframe(
-        tabela_yoy.reset_index(drop=True),
+        df_yoy[[
+            "Mês",
+            "categoria",
+            "Total Atual",
+            "Total Ano Anterior",
+            "Variação (R$)",
+            "Variação (%)"
+        ]].reset_index(drop=True),
         use_container_width=True
     )
-
-    st.caption("📌 YoY baseado em data_pagamento • mês vs mesmo mês do ano anterior")
