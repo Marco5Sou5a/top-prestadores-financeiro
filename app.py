@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import altair as alt
 from sqlalchemy import create_engine, text
 
 # ======================================================
@@ -29,9 +30,18 @@ engine = get_engine()
 # FUNÇÕES AUXILIARES
 # ======================================================
 def formatar_real(valor):
-    if valor is None:
+    if valor is None or pd.isna(valor):
         return "R$ 0,00"
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def estilo_variacao(val):
+    if pd.isna(val):
+        return ""
+    if val > 0:
+        return "color: green; font-weight: bold;"
+    if val < 0:
+        return "color: red; font-weight: bold;"
+    return ""
 
 # ======================================================
 # FUNÇÕES — TOP PRESTADORES
@@ -83,7 +93,7 @@ def carregar_comparativo_mensal_categoria():
         from pagamentos
         where data_pagamento is not null
         group by mes, categoria
-        order by mes desc, categoria
+        order by mes, categoria
     """
     return pd.read_sql(query, engine)
 
@@ -106,6 +116,7 @@ def carregar_yoy_categoria():
         select
             atual.mes,
             atual.categoria,
+            atual.ano,
             atual.total_pago as total_atual,
             anterior.total_pago as total_ano_anterior,
             atual.total_pago - anterior.total_pago as variacao_valor,
@@ -118,38 +129,9 @@ def carregar_yoy_categoria():
             on atual.mes_num = anterior.mes_num
            and atual.ano = anterior.ano + 1
            and atual.categoria = anterior.categoria
-        order by atual.mes desc, atual.categoria
+        order by atual.mes, atual.categoria
     """
     return pd.read_sql(query, engine)
-    
-def cor_variacao(val):
-    if pd.isna(val):
-        return ""
-    elif val > 0:
-        return "color: green; font-weight: bold;"
-    elif val < 0:
-        return "color: red; font-weight: bold;"
-    else:
-        return ""
-
-tabela_estilizada = (
-    df_yoy[[
-        "Mes",
-        "categoria",
-        "Total Atual",
-        "Total Ano Anterior",
-        "Variação (R$)",
-        "Variação (%)"
-    ]]
-    .style
-    .applymap(cor_variacao, subset=["Variação (%)"])
-)
-
-st.markdown("### 🚦 Variação YoY (cores automáticas)")
-st.dataframe(
-    tabela_estilizada,
-    use_container_width=True
-)
 
 # ======================================================
 # ABAS
@@ -212,12 +194,17 @@ with aba2:
     if categorias:
         df_comp = df_comp[df_comp["categoria"].isin(categorias)]
 
-    df_pivot = df_comp.pivot_table(
-        index="mes",
-        columns="categoria",
-        values="total_pago",
-        aggfunc="sum"
-    ).fillna(0).sort_index()
+    df_pivot = (
+        df_comp
+        .pivot_table(
+            index="mes",
+            columns="categoria",
+            values="total_pago",
+            aggfunc="sum"
+        )
+        .fillna(0)
+        .sort_index()
+    )
 
     st.dataframe(
         df_pivot.applymap(formatar_real),
@@ -227,18 +214,13 @@ with aba2:
     st.line_chart(df_pivot)
 
 # ======================================================
-# ABA 3 — YoY
+# ABA 3 — COMPARATIVO YoY (GRÁFICO + CORES)
 # ======================================================
 with aba3:
-    st.subheader("📊 Comparativo YoY — Evolução")
+    st.subheader("📊 Comparativo YoY — Barras e Variação")
 
     df_yoy = carregar_yoy_categoria()
 
-    if df_yoy.empty:
-        st.warning("Nenhum dado encontrado para YoY.")
-        st.stop()
-
-    # Filtro de categorias
     categorias_yoy = st.multiselect(
         "Selecione as categorias",
         sorted(df_yoy["categoria"].dropna().unique()),
@@ -248,76 +230,54 @@ with aba3:
     if categorias_yoy:
         df_yoy = df_yoy[df_yoy["categoria"].isin(categorias_yoy)]
 
-    # ==============================
-    # PREPARAÇÃO DOS DADOS
-    # ==============================
-    df_yoy["Ano"] = df_yoy["mes"].dt.year
     df_yoy["Mes"] = df_yoy["mes"].dt.strftime("%Y-%m")
 
-    # Pivot para gráfico
-    df_grafico = (
+    # ------------------------------
+    # GRÁFICO DE BARRAS YoY
+    # ------------------------------
+    df_barras = (
         df_yoy
-        .pivot_table(
-            index="Mes",
-            columns="Ano",
-            values="total_atual",
-            aggfunc="sum"
-        )
-        .sort_index()
+        .groupby(["Mes", "ano"], as_index=False)["total_atual"]
+        .sum()
     )
 
-    st.markdown("### 📈 Evolução YoY (Ano sobre Ano)")
-    import altair as alt
+    grafico = alt.Chart(df_barras).mark_bar().encode(
+        x=alt.X("Mes:N", title="Mês"),
+        y=alt.Y("total_atual:Q", title="Total Pago"),
+        color=alt.Color("ano:N", title="Ano"),
+        xOffset="ano:N",
+        tooltip=[
+            alt.Tooltip("ano:N", title="Ano"),
+            alt.Tooltip("total_atual:Q", title="Total", format=",.2f")
+        ]
+    ).properties(
+        height=400
+    )
 
-# Preparar dados para gráfico de barras
-df_barras = (
-    df_yoy
-    .groupby(["Ano", "Mes"], as_index=False)["total_atual"]
-    .sum()
-)
+    st.altair_chart(grafico, use_container_width=True)
 
-grafico_barras = alt.Chart(df_barras).mark_bar().encode(
-    x=alt.X("Mes:N", title="Mês"),
-    y=alt.Y("total_atual:Q", title="Total Pago"),
-    color=alt.Color(
-        "Ano:N",
-        legend=alt.Legend(title="Ano"),
-        scale=alt.Scale(scheme="tableau10")
-    ),
-    xOffset="Ano:N",
-    tooltip=[
-        alt.Tooltip("Ano:N"),
-        alt.Tooltip("total_atual:Q", format=",.2f")
-    ]
-).properties(
-    width="container",
-    height=400
-)
-
-st.altair_chart(grafico_barras, use_container_width=True)
-
-
-
-    # ==============================
-    # TABELA DETALHADA (CONFERÊNCIA)
-    # ==============================
+    # ------------------------------
+    # TABELA YoY COM CORES
+    # ------------------------------
     df_yoy["Total Atual"] = df_yoy["total_atual"].apply(formatar_real)
     df_yoy["Total Ano Anterior"] = df_yoy["total_ano_anterior"].apply(formatar_real)
     df_yoy["Variação (R$)"] = df_yoy["variacao_valor"].apply(formatar_real)
     df_yoy["Variação (%)"] = (df_yoy["variacao_percentual"] * 100).round(2)
 
-    st.markdown("### 📋 Detalhamento YoY")
+    tabela = df_yoy[[
+        "Mes",
+        "categoria",
+        "Total Atual",
+        "Total Ano Anterior",
+        "Variação (R$)",
+        "Variação (%)"
+    ]]
+
     st.dataframe(
-        df_yoy[[
-            "Mes",
-            "categoria",
-            "Total Atual",
-            "Total Ano Anterior",
-            "Variação (R$)",
-            "Variação (%)"
-        ]].reset_index(drop=True),
+        tabela
+        .style
+        .applymap(estilo_variacao, subset=["Variação (%)"]),
         use_container_width=True
     )
 
-    st.caption("📌 Gráfico: evolução mensal • Base: data_pagamento")
-
+    st.caption("🟢 Crescimento • 🔴 Queda • Base: data_pagamento")
