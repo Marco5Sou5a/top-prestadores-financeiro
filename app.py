@@ -29,12 +29,14 @@ engine = get_engine()
 # FUNÇÕES AUXILIARES
 # ======================================================
 def formatar_real(valor):
+    if valor is None:
+        return "R$ 0,00"
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # ======================================================
-# FUNÇÕES — TOP PRESTADORES
+# FUNÇÕES — TOP PRESTADORES (VIEW OFICIAL)
 # ======================================================
-def carregar_meses():
+def carregar_meses_top():
     query = """
         select distinct mes_referencia
         from vw_top_prestadores
@@ -44,7 +46,9 @@ def carregar_meses():
 
 def carregar_top_prestadores(mes, top_n):
     query = text("""
-        select prestador, total_pago
+        select
+            prestador,
+            total_pago
         from vw_top_prestadores
         where mes_referencia = :mes
         order by total_pago desc
@@ -72,7 +76,7 @@ def total_sem_agua_do_cernes(mes, top_n):
 # ======================================================
 # FUNÇÕES — COMPARATIVO MENSAL POR CATEGORIA
 # ======================================================
-def carregar_comparativo_categoria():
+def carregar_comparativo_mensal_categoria():
     query = """
         select
             date_trunc('month', data_pagamento) as mes,
@@ -81,27 +85,66 @@ def carregar_comparativo_categoria():
         from pagamentos
         where data_pagamento is not null
         group by mes, categoria
-        order by mes desc, total_pago desc
+        order by mes desc, categoria
+    """
+    return pd.read_sql(query, engine)
+
+# ======================================================
+# FUNÇÕES — COMPARATIVO YoY (YEAR OVER YEAR)
+# ======================================================
+def carregar_yoy_categoria():
+    query = """
+        with base as (
+            select
+                date_trunc('month', data_pagamento) as mes,
+                extract(year from data_pagamento) as ano,
+                extract(month from data_pagamento) as mes_num,
+                categoria,
+                sum(abs(valor)) as total_pago
+            from pagamentos
+            where data_pagamento is not null
+            group by mes, ano, mes_num, categoria
+        )
+        select
+            atual.mes,
+            atual.categoria,
+            atual.total_pago as total_atual,
+            anterior.total_pago as total_ano_anterior,
+            atual.total_pago - anterior.total_pago as variacao_valor,
+            case
+                when anterior.total_pago is null or anterior.total_pago = 0 then null
+                else (atual.total_pago - anterior.total_pago) / anterior.total_pago
+            end as variacao_percentual
+        from base atual
+        left join base anterior
+            on atual.mes_num = anterior.mes_num
+           and atual.ano = anterior.ano + 1
+           and atual.categoria = anterior.categoria
+        order by atual.mes desc, atual.categoria
     """
     return pd.read_sql(query, engine)
 
 # ======================================================
 # INTERFACE — ABAS
 # ======================================================
-aba1, aba2 = st.tabs(["🏆 Top Prestadores", "📈 Comparativo Mensal"])
+aba1, aba2, aba3 = st.tabs([
+    "🏆 Top Prestadores",
+    "📈 Comparativo Mensal",
+    "📊 Comparativo YoY"
+])
 
 # ======================================================
 # ABA 1 — TOP PRESTADORES
 # ======================================================
 with aba1:
-    df_meses = carregar_meses()
+    df_meses = carregar_meses_top()
 
     if df_meses.empty:
-        st.warning("Nenhum dado encontrado.")
+        st.warning("Nenhum dado encontrado na VIEW de Top Prestadores.")
         st.stop()
 
     mes_selecionado = st.selectbox(
-        "📅 Selecione o mês",
+        "📅 Selecione o mês de referência",
         df_meses["mes_referencia"].dt.strftime("%Y-%m").tolist()
     )
 
@@ -135,23 +178,20 @@ with aba1:
 with aba2:
     st.subheader("📈 Comparativo Mensal por Categoria")
 
-    df_comp = carregar_comparativo_categoria()
+    df_comp = carregar_comparativo_mensal_categoria()
 
     if df_comp.empty:
         st.warning("Nenhum dado encontrado.")
         st.stop()
 
-    # Filtros
     categorias = st.multiselect(
         "Selecione as categorias",
-        sorted(df_comp["categoria"].dropna().unique()),
-        default=None
+        sorted(df_comp["categoria"].dropna().unique())
     )
 
     if categorias:
         df_comp = df_comp[df_comp["categoria"].isin(categorias)]
 
-    # Pivot para visualização
     df_pivot = (
         df_comp
         .pivot_table(
@@ -171,5 +211,46 @@ with aba2:
 
     st.line_chart(df_pivot)
 
-    st.caption("📌 Valores absolutos • Base: data_pagamento • Supabase")
+    st.caption("📌 Base: data_pagamento • Valores absolutos")
 
+# ======================================================
+# ABA 3 — COMPARATIVO YoY
+# ======================================================
+with aba3:
+    st.subheader("📊 Comparativo Year over Year (YoY)")
+
+    df_yoy = carregar_yoy_categoria()
+
+    if df_yoy.empty:
+        st.warning("Nenhum dado encontrado para YoY.")
+        st.stop()
+
+    categorias_yoy = st.multiselect(
+        "Selecione as categorias",
+        sorted(df_yoy["categoria"].dropna().unique())
+    )
+
+    if categorias_yoy:
+        df_yoy = df_yoy[df_yoy["categoria"].isin(categorias_yoy)]
+
+    df_yoy["Mês"] = df_yoy["mes"].dt.strftime("%Y-%m")
+    df_yoy["Total Atual"] = df_yoy["total_atual"].apply(formatar_real)
+    df_yoy["Total Ano Anterior"] = df_yoy["total_ano_anterior"].apply(formatar_real)
+    df_yoy["Variação (R$)"] = df_yoy["variacao_valor"].apply(formatar_real)
+    df_yoy["Variação (%)"] = (df_yoy["variacao_percentual"] * 100).round(2)
+
+    tabela_yoy = df_yoy[[
+        "Mês",
+        "categoria",
+        "Total Atual",
+        "Total Ano Anterior",
+        "Variação (R$)",
+        "Variação (%)"
+    ]]
+
+    st.dataframe(
+        tabela_yoy.reset_index(drop=True),
+        use_container_width=True
+    )
+
+    st.caption("📌 YoY baseado em data_pagamento • mês vs mesmo mês do ano anterior")
