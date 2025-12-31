@@ -121,6 +121,35 @@ def carregar_yoy_categoria():
         order by atual.mes desc, atual.categoria
     """
     return pd.read_sql(query, engine)
+    
+def cor_variacao(val):
+    if pd.isna(val):
+        return ""
+    elif val > 0:
+        return "color: green; font-weight: bold;"
+    elif val < 0:
+        return "color: red; font-weight: bold;"
+    else:
+        return ""
+
+tabela_estilizada = (
+    df_yoy[[
+        "Mes",
+        "categoria",
+        "Total Atual",
+        "Total Ano Anterior",
+        "Variação (R$)",
+        "Variação (%)"
+    ]]
+    .style
+    .applymap(cor_variacao, subset=["Variação (%)"])
+)
+
+st.markdown("### 🚦 Variação YoY (cores automáticas)")
+st.dataframe(
+    tabela_estilizada,
+    use_container_width=True
+)
 
 # ======================================================
 # ABAS
@@ -238,7 +267,36 @@ with aba3:
     )
 
     st.markdown("### 📈 Evolução YoY (Ano sobre Ano)")
-    st.line_chart(df_grafico)
+    import altair as alt
+
+# Preparar dados para gráfico de barras
+df_barras = (
+    df_yoy
+    .groupby(["Ano", "Mes"], as_index=False)["total_atual"]
+    .sum()
+)
+
+grafico_barras = alt.Chart(df_barras).mark_bar().encode(
+    x=alt.X("Mes:N", title="Mês"),
+    y=alt.Y("total_atual:Q", title="Total Pago"),
+    color=alt.Color(
+        "Ano:N",
+        legend=alt.Legend(title="Ano"),
+        scale=alt.Scale(scheme="tableau10")
+    ),
+    xOffset="Ano:N",
+    tooltip=[
+        alt.Tooltip("Ano:N"),
+        alt.Tooltip("total_atual:Q", format=",.2f")
+    ]
+).properties(
+    width="container",
+    height=400
+)
+
+st.altair_chart(grafico_barras, use_container_width=True)
+
+
 
     # ==============================
     # TABELA DETALHADA (CONFERÊNCIA)
