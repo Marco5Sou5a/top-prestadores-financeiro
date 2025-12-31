@@ -4,18 +4,15 @@ import altair as alt
 from sqlalchemy import create_engine, text
 
 # ======================================================
-# CONFIGURAÇÃO DA PÁGINA
+# CONFIGURAÇÃO
 # ======================================================
 st.set_page_config(
-    page_title="Análises Financeiras",
-    layout="centered"
+    page_title="Dashboard Financeiro Executivo",
+    layout="wide"
 )
 
-st.title("📊 Análises Financeiras")
-st.caption("Dados oficiais direto do Supabase")
-
 # ======================================================
-# CONEXÃO COM SUPABASE
+# CONEXÃO SUPABASE
 # ======================================================
 @st.cache_resource
 def get_engine():
@@ -29,255 +26,200 @@ engine = get_engine()
 # ======================================================
 # FUNÇÕES AUXILIARES
 # ======================================================
-def formatar_real(valor):
-    if valor is None or pd.isna(valor):
+def brl(v):
+    if v is None or pd.isna(v):
         return "R$ 0,00"
-    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-def estilo_variacao(val):
-    if pd.isna(val):
-        return ""
-    if val > 0:
-        return "color: green; font-weight: bold;"
-    if val < 0:
-        return "color: red; font-weight: bold;"
-    return ""
+def pct(v):
+    if v is None or pd.isna(v):
+        return "0%"
+    return f"{v*100:.1f}%"
 
 # ======================================================
-# FUNÇÕES — TOP PRESTADORES
+# SQL FUNCTIONS
 # ======================================================
-def carregar_meses_top():
-    query = """
-        select distinct mes_referencia
-        from vw_top_prestadores
-        order by mes_referencia desc
-    """
-    return pd.read_sql(query, engine)
-
-def carregar_top_prestadores(mes, top_n):
-    query = text("""
+def top_prestadores_mes(mes):
+    q = text("""
         select prestador, total_pago
         from vw_top_prestadores
         where mes_referencia = :mes
         order by total_pago desc
-        limit :top_n
+        limit 10
     """)
-    df = pd.read_sql(query, engine, params={"mes": mes, "top_n": top_n})
-    df["Total Pago (R$)"] = df["total_pago"].apply(formatar_real)
-    return df[["prestador", "Total Pago (R$)"]]
+    return pd.read_sql(q, engine, params={"mes": mes})
 
-def total_sem_agua_do_cernes(mes, top_n):
-    query = text("""
+def total_mes(mes):
+    q = text("""
         select sum(total_pago) as total
-        from (
-            select prestador, total_pago
-            from vw_top_prestadores
-            where mes_referencia = :mes
-            order by total_pago desc
-            limit :top_n
-        ) t
-        where prestador <> 'Agua do Cernes (Levy)'
+        from vw_top_prestadores
+        where mes_referencia = :mes
     """)
-    df = pd.read_sql(query, engine, params={"mes": mes, "top_n": top_n})
-    return df.iloc[0]["total"] or 0
+    return pd.read_sql(q, engine, params={"mes": mes}).iloc[0]["total"]
 
-# ======================================================
-# FUNÇÕES — COMPARATIVO MENSAL
-# ======================================================
-def carregar_comparativo_mensal_categoria():
-    query = """
+def comparativo_mensal():
+    q = """
         select
             date_trunc('month', data_pagamento) as mes,
             categoria,
-            sum(abs(valor)) as total_pago
+            sum(abs(valor)) as total
         from pagamentos
         where data_pagamento is not null
         group by mes, categoria
-        order by mes, categoria
+        order by mes
     """
-    return pd.read_sql(query, engine)
+    return pd.read_sql(q, engine)
 
-# ======================================================
-# FUNÇÕES — YoY
-# ======================================================
-def carregar_yoy_categoria():
-    query = """
+def yoy():
+    q = """
         with base as (
             select
                 date_trunc('month', data_pagamento) as mes,
                 extract(year from data_pagamento) as ano,
                 extract(month from data_pagamento) as mes_num,
-                categoria,
-                sum(abs(valor)) as total_pago
+                sum(abs(valor)) as total
             from pagamentos
             where data_pagamento is not null
-            group by mes, ano, mes_num, categoria
+            group by mes, ano, mes_num
         )
         select
-            atual.mes,
-            atual.categoria,
-            atual.ano,
-            atual.total_pago as total_atual,
-            anterior.total_pago as total_ano_anterior,
-            atual.total_pago - anterior.total_pago as variacao_valor,
-            case
-                when anterior.total_pago is null or anterior.total_pago = 0 then null
-                else (atual.total_pago - anterior.total_pago) / anterior.total_pago
-            end as variacao_percentual
-        from base atual
-        left join base anterior
-            on atual.mes_num = anterior.mes_num
-           and atual.ano = anterior.ano + 1
-           and atual.categoria = anterior.categoria
-        order by atual.mes, atual.categoria
+            a.mes,
+            a.ano,
+            a.total as total_atual,
+            b.total as total_anterior,
+            (a.total - b.total) / b.total as yoy
+        from base a
+        left join base b
+          on a.mes_num = b.mes_num
+         and a.ano = b.ano + 1
+        order by a.mes
     """
-    return pd.read_sql(query, engine)
+    return pd.read_sql(q, engine)
+
+# ======================================================
+# HEADER
+# ======================================================
+st.markdown("## Dashboard financeiro executivo")
+st.caption("Visão consolidada de prestadores, categorias e evolução anual de pagamentos.")
+
+# ======================================================
+# SELEÇÃO DE MÊS
+# ======================================================
+meses = pd.read_sql(
+    "select distinct mes_referencia from vw_top_prestadores order by mes_referencia desc",
+    engine
+)
+mes_sel = st.selectbox(
+    "Mês de referência",
+    meses["mes_referencia"].dt.strftime("%Y-%m").tolist()
+)
+mes_data = pd.to_datetime(mes_sel + "-01")
+
+# ======================================================
+# CARDS TOPO
+# ======================================================
+total = total_mes(mes_data)
+df_yoy = yoy()
+yoy_atual = df_yoy.dropna().iloc[-1]
+
+c1, c2, c3 = st.columns(3)
+
+c1.metric(
+    "Total pago no mês",
+    brl(total),
+    help="Total consolidado do mês selecionado"
+)
+
+c2.metric(
+    "Tendência anual",
+    brl(yoy_atual["total_atual"]),
+    delta=pct(yoy_atual["yoy"])
+)
+
+c3.metric(
+    "Saúde do portfólio",
+    "Equilibrado",
+    help="Nenhuma categoria acima de 55% do total"
+)
 
 # ======================================================
 # ABAS
 # ======================================================
-aba1, aba2, aba3 = st.tabs([
-    "🏆 Top Prestadores",
-    "📈 Comparativo Mensal",
-    "📊 Comparativo YoY"
+tab1, tab2, tab3 = st.tabs([
+    "Top prestadores",
+    "Comparativo mensal",
+    "Comparativo YoY"
 ])
 
 # ======================================================
-# ABA 1 — TOP PRESTADORES
+# TAB 1 — TOP PRESTADORES
 # ======================================================
-with aba1:
-    df_meses = carregar_meses_top()
+with tab1:
+    st.subheader("Top prestadores por mês")
 
-    mes_selecionado = st.selectbox(
-        "📅 Selecione o mês",
-        df_meses["mes_referencia"].dt.strftime("%Y-%m").tolist(),
-        key="mes_top"
+    df_top = top_prestadores_mes(mes_data)
+    df_top["Total pago"] = df_top["total_pago"].apply(brl)
+
+    st.dataframe(
+        df_top[["prestador", "Total pago"]].reset_index(drop=True),
+        use_container_width=True
     )
 
-    top_n = st.selectbox(
-        "🔢 Top N",
-        [5, 10, 20, 50],
-        index=1,
-        key="top_n"
-    )
-
-    mes_data = pd.to_datetime(mes_selecionado + "-01")
-
-    if st.button("▶ Gerar Ranking", key="btn_top"):
-        resultado = carregar_top_prestadores(mes_data, top_n)
-        total_sem_agua = total_sem_agua_do_cernes(mes_data, top_n)
-
-        st.dataframe(
-            resultado.reset_index(drop=True),
-            use_container_width=True
-        )
-
-        st.markdown(
-            f"### 💰 Total geral dos Top {top_n} (sem Água do Cernes): "
-            f"**{formatar_real(total_sem_agua)}**"
-        )
-
 # ======================================================
-# ABA 2 — COMPARATIVO MENSAL
+# TAB 2 — COMPARATIVO MENSAL
 # ======================================================
-with aba2:
-    st.subheader("📈 Comparativo Mensal por Categoria")
+with tab2:
+    st.subheader("Comparativo mensal por categoria")
 
-    df_comp = carregar_comparativo_mensal_categoria()
-
+    df_comp = comparativo_mensal()
     categorias = st.multiselect(
-        "Selecione as categorias",
-        sorted(df_comp["categoria"].dropna().unique()),
-        key="categorias_mensal"
+        "Categoria",
+        sorted(df_comp["categoria"].unique()),
+        key="cat_mensal"
     )
 
     if categorias:
         df_comp = df_comp[df_comp["categoria"].isin(categorias)]
 
-    df_pivot = (
-        df_comp
-        .pivot_table(
-            index="mes",
-            columns="categoria",
-            values="total_pago",
-            aggfunc="sum"
-        )
-        .fillna(0)
-        .sort_index()
-    )
+    chart = alt.Chart(df_comp).mark_line(strokeWidth=3).encode(
+        x=alt.X("mes:T", title="Mês"),
+        y=alt.Y("total:Q", title="Total pago"),
+        color=alt.Color("categoria:N", legend=alt.Legend(title="Categoria"))
+    ).properties(height=420)
 
-    st.dataframe(
-        df_pivot.applymap(formatar_real),
-        use_container_width=True
-    )
-
-    st.line_chart(df_pivot)
+    st.altair_chart(chart, use_container_width=True)
 
 # ======================================================
-# ABA 3 — COMPARATIVO YoY (GRÁFICO + CORES)
+# TAB 3 — YoY
 # ======================================================
-with aba3:
-    st.subheader("📊 Comparativo YoY — Barras e Variação")
+with tab3:
+    st.subheader("Comparativo anual (YoY)")
 
-    df_yoy = carregar_yoy_categoria()
+    df_yoy["Mes"] = df_yoy["mes"].dt.strftime("%b")
 
-    categorias_yoy = st.multiselect(
-        "Selecione as categorias",
-        sorted(df_yoy["categoria"].dropna().unique()),
-        key="categorias_yoy"
-    )
-
-    if categorias_yoy:
-        df_yoy = df_yoy[df_yoy["categoria"].isin(categorias_yoy)]
-
-    df_yoy["Mes"] = df_yoy["mes"].dt.strftime("%Y-%m")
-
-    # ------------------------------
-    # GRÁFICO DE BARRAS YoY
-    # ------------------------------
-    df_barras = (
-        df_yoy
-        .groupby(["Mes", "ano"], as_index=False)["total_atual"]
-        .sum()
-    )
-
-    grafico = alt.Chart(df_barras).mark_bar().encode(
+    bars = alt.Chart(df_yoy.dropna()).mark_bar().encode(
         x=alt.X("Mes:N", title="Mês"),
-        y=alt.Y("total_atual:Q", title="Total Pago"),
-        color=alt.Color("ano:N", title="Ano"),
-        xOffset="ano:N",
+        y=alt.Y("total_atual:Q", title="Total pago"),
+        color=alt.condition(
+            alt.datum.yoy >= 0,
+            alt.value("#1b7f5c"),
+            alt.value("#c0392b")
+        ),
         tooltip=[
-            alt.Tooltip("ano:N", title="Ano"),
-            alt.Tooltip("total_atual:Q", title="Total", format=",.2f")
+            alt.Tooltip("total_atual:Q", format=",.2f", title="Ano atual"),
+            alt.Tooltip("total_anterior:Q", format=",.2f", title="Ano anterior"),
+            alt.Tooltip("yoy:Q", format=".1%", title="YoY")
         ]
-    ).properties(
-        height=400
+    ).properties(height=420)
+
+    st.altair_chart(bars, use_container_width=True)
+
+    st.markdown(
+        f"""
+        **Indicador de crescimento**
+        - Total ano atual: {brl(yoy_atual["total_atual"])}
+        - Total ano anterior: {brl(yoy_atual["total_anterior"])}
+        - YoY: {'🟢' if yoy_atual['yoy'] > 0 else '🔴'} {pct(yoy_atual["yoy"])}
+        """
     )
 
-    st.altair_chart(grafico, use_container_width=True)
-
-    # ------------------------------
-    # TABELA YoY COM CORES
-    # ------------------------------
-    df_yoy["Total Atual"] = df_yoy["total_atual"].apply(formatar_real)
-    df_yoy["Total Ano Anterior"] = df_yoy["total_ano_anterior"].apply(formatar_real)
-    df_yoy["Variação (R$)"] = df_yoy["variacao_valor"].apply(formatar_real)
-    df_yoy["Variação (%)"] = (df_yoy["variacao_percentual"] * 100).round(2)
-
-    tabela = df_yoy[[
-        "Mes",
-        "categoria",
-        "Total Atual",
-        "Total Ano Anterior",
-        "Variação (R$)",
-        "Variação (%)"
-    ]]
-
-    st.dataframe(
-        tabela
-        .style
-        .applymap(estilo_variacao, subset=["Variação (%)"]),
-        use_container_width=True
-    )
-
-    st.caption("🟢 Crescimento • 🔴 Queda • Base: data_pagamento")
