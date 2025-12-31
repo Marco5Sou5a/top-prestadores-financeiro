@@ -201,10 +201,15 @@ with aba2:
 # ABA 3 — YoY
 # ======================================================
 with aba3:
-    st.subheader("📊 Comparativo YoY")
+    st.subheader("📊 Comparativo YoY — Evolução")
 
     df_yoy = carregar_yoy_categoria()
 
+    if df_yoy.empty:
+        st.warning("Nenhum dado encontrado para YoY.")
+        st.stop()
+
+    # Filtro de categorias
     categorias_yoy = st.multiselect(
         "Selecione as categorias",
         sorted(df_yoy["categoria"].dropna().unique()),
@@ -214,15 +219,39 @@ with aba3:
     if categorias_yoy:
         df_yoy = df_yoy[df_yoy["categoria"].isin(categorias_yoy)]
 
-    df_yoy["Mês"] = df_yoy["mes"].dt.strftime("%Y-%m")
+    # ==============================
+    # PREPARAÇÃO DOS DADOS
+    # ==============================
+    df_yoy["Ano"] = df_yoy["mes"].dt.year
+    df_yoy["Mes"] = df_yoy["mes"].dt.strftime("%Y-%m")
+
+    # Pivot para gráfico
+    df_grafico = (
+        df_yoy
+        .pivot_table(
+            index="Mes",
+            columns="Ano",
+            values="total_atual",
+            aggfunc="sum"
+        )
+        .sort_index()
+    )
+
+    st.markdown("### 📈 Evolução YoY (Ano sobre Ano)")
+    st.line_chart(df_grafico)
+
+    # ==============================
+    # TABELA DETALHADA (CONFERÊNCIA)
+    # ==============================
     df_yoy["Total Atual"] = df_yoy["total_atual"].apply(formatar_real)
     df_yoy["Total Ano Anterior"] = df_yoy["total_ano_anterior"].apply(formatar_real)
     df_yoy["Variação (R$)"] = df_yoy["variacao_valor"].apply(formatar_real)
     df_yoy["Variação (%)"] = (df_yoy["variacao_percentual"] * 100).round(2)
 
+    st.markdown("### 📋 Detalhamento YoY")
     st.dataframe(
         df_yoy[[
-            "Mês",
+            "Mes",
             "categoria",
             "Total Atual",
             "Total Ano Anterior",
@@ -231,3 +260,6 @@ with aba3:
         ]].reset_index(drop=True),
         use_container_width=True
     )
+
+    st.caption("📌 Gráfico: evolução mensal • Base: data_pagamento")
+
